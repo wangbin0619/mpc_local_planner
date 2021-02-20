@@ -24,6 +24,8 @@
 
 #include <mpc_local_planner/utils/math_utils.h>
 
+#include <tf_conversions/tf_eigen.h>
+
 #include <tf2_eigen/tf2_eigen.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
@@ -46,9 +48,7 @@ MpcLocalPlannerROS::MpcLocalPlannerROS()
       _tf(nullptr),
       _costmap_model(nullptr),
       _costmap_converter_loader("costmap_converter", "costmap_converter::BaseCostmapToPolygons"),
-      dynamic_controller_recfg_(NULL),
-      dynamic_collision_recfg_(NULL),
-      dynamic_footprint_recfg_(NULL),
+      /*dynamic_recfg_(NULL),*/
       _goal_reached(false),
       _no_infeasible_plans(0),
       /*last_preferred_rotdir_(RotType::none),*/
@@ -58,36 +58,15 @@ MpcLocalPlannerROS::MpcLocalPlannerROS()
 
 MpcLocalPlannerROS::~MpcLocalPlannerROS() {}
 
-void MpcLocalPlannerROS::reconfigureControllerCB(ControllerReconfigureConfig& config, uint32_t level)
+/*
+void MpcLocalPlannerROS::reconfigureCB(TebLocalPlannerReconfigureConfig& config, uint32_t level)
 {
-    boost::mutex::scoped_lock l(config_mutex_);
-
-    _params.xy_goal_tolerance                      = config.xy_goal_tolerance;
-    _params.yaw_goal_tolerance                     = config.yaw_goal_tolerance;
-    _params.global_plan_overwrite_orientation      = config.global_plan_overwrite_orientation;
-    _params.global_plan_prune_distance             = config.global_plan_prune_distance;
-    _params.max_global_plan_lookahead_dist         = config.max_global_plan_lookahead_dist;
-    _params.global_plan_viapoint_sep               = config.global_plan_viapoint_sep;
+  cfg_.reconfigure(config);
 }
+*/
 
-void MpcLocalPlannerROS::reconfigureFootprintCB(FootprintReconfigureConfig& config, uint32_t level)
-{
-    boost::mutex::scoped_lock l(config_mutex_);
-
-    _params.is_footprint_dynamic                   = config.is_footprint_dynamic;
-}
-
-void MpcLocalPlannerROS::reconfigureCollisionCB(CollisionReconfigureConfig& config, uint32_t level)
-{
-    boost::mutex::scoped_lock l(config_mutex_);
-
-    _params.include_costmap_obstacles              = config.include_costmap_obstacles;
-    _params.costmap_obstacles_behind_robot_dist    = config.costmap_obstacles_behind_robot_dist;
-    _params.collision_check_min_resolution_angular = config.collision_check_min_resolution_angular;
-    _params.collision_check_no_poses               = config.collision_check_no_poses;
-}
-
-void MpcLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d::Costmap2DROS* costmap_ros)
+//void MpcLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d::Costmap2DROS* costmap_ros)
+void MpcLocalPlannerROS::initialize(std::string name, tf::TransformListener* tf, costmap_2d::Costmap2DROS* costmap_ros)
 {
     // check if the plugin is already initialized
     if (!_initialized)
@@ -107,9 +86,7 @@ void MpcLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
 
         // special parameters
         nh.param("odom_topic", _params.odom_topic, _params.odom_topic);
-
         nh.param("footprint_model/is_footprint_dynamic", _params.is_footprint_dynamic, _params.is_footprint_dynamic);
-
         nh.param("collision_avoidance/include_costmap_obstacles", _params.include_costmap_obstacles, _params.include_costmap_obstacles);
         nh.param("collision_avoidance/costmap_obstacles_behind_robot_dist", _params.costmap_obstacles_behind_robot_dist,
                  _params.costmap_obstacles_behind_robot_dist);
@@ -187,23 +164,12 @@ void MpcLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
         _odom_helper.setOdomTopic(_params.odom_topic);
 
         // setup dynamic reconfigure
-        ros::NodeHandle controller_nh(nh, "controller");
-        dynamic_controller_recfg_ = boost::make_shared<dynamic_reconfigure::Server<ControllerReconfigureConfig>>(controller_nh);
-        dynamic_reconfigure::Server<ControllerReconfigureConfig>::CallbackType controller_cb =
-            boost::bind(&MpcLocalPlannerROS::reconfigureControllerCB, this, _1, _2);
-        dynamic_controller_recfg_->setCallback(controller_cb);
-
-        ros::NodeHandle collision_nh(nh, "collision");
-        dynamic_collision_recfg_ = boost::make_shared<dynamic_reconfigure::Server<CollisionReconfigureConfig>>(collision_nh);
-        dynamic_reconfigure::Server<CollisionReconfigureConfig>::CallbackType collision_cb =
-            boost::bind(&MpcLocalPlannerROS::reconfigureCollisionCB, this, _1, _2);
-        dynamic_collision_recfg_->setCallback(collision_cb);
-
-        ros::NodeHandle footprint_nh(nh, "footprint_model");
-        dynamic_footprint_recfg_ = boost::make_shared<dynamic_reconfigure::Server<FootprintReconfigureConfig>>(footprint_nh);
-        dynamic_reconfigure::Server<FootprintReconfigureConfig>::CallbackType footprint_cb =
-            boost::bind(&MpcLocalPlannerROS::reconfigureFootprintCB, this, _1, _2);
-        dynamic_footprint_recfg_->setCallback(footprint_cb);
+        /*
+        dynamic_recfg_ = boost::make_shared<dynamic_reconfigure::Server<MpcLocalPlannerReconfigureConfig>>(nh);
+        dynamic_reconfigure::Server<MpcLocalPlannerReconfigureConfig>::CallbackType cb =
+            boost::bind(&MpcLocalPlanner::reconfigureCB, this, _1, _2);
+        dynamic_recfg_->setCallback(cb);
+        */
 
         // validate optimization footprint and costmap footprint
         validateFootprints(_robot_model->getInscribedRadius(), _robot_inscribed_radius, _controller.getInequalityConstraint()->getMinimumDistance());
@@ -281,24 +247,43 @@ uint32_t MpcLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
 
     // Get robot pose
     geometry_msgs::PoseStamped robot_pose;
-    _costmap_ros->getRobotPose(robot_pose);
+
+    tf::Stamped<tf::Pose> robot_pose_;
+    _costmap_ros->getRobotPose(robot_pose_);
+
+    robot_pose.header.stamp = robot_pose_.stamp_;
+    robot_pose.header.frame_id = robot_pose_.frame_id_;
+    robot_pose.pose.position.x = robot_pose_.getOrigin().getX();
+    robot_pose.pose.position.y = robot_pose_.getOrigin().getY();
+    robot_pose.pose.position.z = 0;
+    robot_pose.pose.orientation.x = robot_pose_.getRotation().x();
+    robot_pose.pose.orientation.y = robot_pose_.getRotation().y();
+    robot_pose.pose.orientation.z = robot_pose_.getRotation().z();
+    robot_pose.pose.orientation.w = robot_pose_.getRotation().w();
+
     _robot_pose = PoseSE2(robot_pose.pose);
 
     // Get robot velocity
-    geometry_msgs::PoseStamped robot_vel_tf;
+    //geometry_msgs::PoseStamped robot_vel_tf;
+    tf::Stamped<tf::Pose> robot_vel_tf;
     _odom_helper.getRobotVel(robot_vel_tf);
-    _robot_vel.linear.x  = robot_vel_tf.pose.position.x;
-    _robot_vel.linear.y  = robot_vel_tf.pose.position.y;
-    _robot_vel.angular.z = tf2::getYaw(robot_vel_tf.pose.orientation);
+    //_robot_vel.linear.x  = robot_vel_tf.pose.position.x;
+    //_robot_vel.linear.y  = robot_vel_tf.pose.position.y;
+    //_robot_vel.angular.z = tf2::getYaw(robot_vel_tf.pose.orientation);
+
+    _robot_vel.linear.x  = robot_vel_tf.getOrigin().getX();
+    _robot_vel.linear.y  = robot_vel_tf.getOrigin().getY();
+    _robot_vel.angular.z = tf::getYaw(robot_vel_tf.getRotation());
 
     // prune global plan to cut off parts of the past (spatially before the robot)
-    pruneGlobalPlan(*_tf, robot_pose, _global_plan, _params.global_plan_prune_distance);
+    pruneGlobalPlan(*_tf, robot_pose_, _global_plan, _params.global_plan_prune_distance);
 
     // Transform global plan to the frame of interest (w.r.t. the local costmap)
     std::vector<geometry_msgs::PoseStamped> transformed_plan;
     int goal_idx;
-    geometry_msgs::TransformStamped tf_plan_to_global;
-    if (!transformGlobalPlan(*_tf, _global_plan, robot_pose, *_costmap, _global_frame, _params.max_global_plan_lookahead_dist, transformed_plan,
+    //geometry_msgs::TransformStamped tf_plan_to_global;
+    tf::StampedTransform tf_plan_to_global;
+    if (!transformGlobalPlan(*_tf, _global_plan, robot_pose_, *_costmap, _global_frame, _params.max_global_plan_lookahead_dist, transformed_plan,
                              &goal_idx, &tf_plan_to_global))
     {
         ROS_WARN("Could not transform the global plan to the frame of the controller");
@@ -307,15 +292,24 @@ uint32_t MpcLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     }
 
     // update via-points container
-    if (!_custom_via_points_active) updateViaPointsContainer(transformed_plan, _params.global_plan_viapoint_sep);
+    if (!_custom_via_points_active) 
+        updateViaPointsContainer(transformed_plan, _params.global_plan_viapoint_sep);
 
     // check if global goal is reached
-    geometry_msgs::PoseStamped global_goal;
-    tf2::doTransform(_global_plan.back(), global_goal, tf_plan_to_global);
-    double dx           = global_goal.pose.position.x - _robot_pose.x();
-    double dy           = global_goal.pose.position.y - _robot_pose.y();
-    double delta_orient = g2o::normalize_theta(tf2::getYaw(global_goal.pose.orientation) - _robot_pose.theta());
-    if (std::abs(std::sqrt(dx * dx + dy * dy)) < _params.xy_goal_tolerance && std::abs(delta_orient) < _params.yaw_goal_tolerance)
+    //geometry_msgs::PoseStamped global_goal;
+    tf::Stamped<tf::Pose> global_goal;
+    //tf2::doTransform(_global_plan.back(), global_goal, tf_plan_to_global);
+    tf::poseStampedMsgToTF(_global_plan.back(), global_goal);
+    global_goal.setData( tf_plan_to_global * global_goal );
+    //double dx           = global_goal.pose.position.x - _robot_pose.x();
+    //double dy           = global_goal.pose.position.y - _robot_pose.y();
+    //double delta_orient = g2o::normalize_theta(tf2::getYaw(global_goal.pose.orientation) - _robot_pose.theta());
+    double dx           = global_goal.getOrigin().getX() - _robot_pose.x();
+    double dy           = global_goal.getOrigin().getY() - _robot_pose.y();
+    //double delta_orient = g2o::normalize_theta(tf2::getYaw(global_goal.pose.orientation) - _robot_pose.theta());
+    double delta_orient = g2o::normalize_theta( tf::getYaw(global_goal.getRotation()) - _robot_pose.theta() );
+    if (std::abs(std::sqrt(dx * dx + dy * dy)) < _params.xy_goal_tolerance 
+        && std::abs(delta_orient) < _params.yaw_goal_tolerance)
     {
         _goal_reached = true;
         return mbf_msgs::ExePathResult::SUCCESS;
@@ -330,20 +324,26 @@ uint32_t MpcLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     }
 
     // Get current goal point (last point of the transformed plan)
-    _robot_goal.x() = transformed_plan.back().pose.position.x;
-    _robot_goal.y() = transformed_plan.back().pose.position.y;
+    tf::Stamped<tf::Pose> goal_point;
+    tf::poseStampedMsgToTF(transformed_plan.back(), goal_point);
+    //_robot_goal.x() = transformed_plan.back().pose.position.x;
+    //_robot_goal.y() = transformed_plan.back().pose.position.y;
+    _robot_goal.x() = goal_point.getOrigin().getX();
+    _robot_goal.y() = goal_point.getOrigin().getY(); 
     // Overwrite goal orientation if needed
     if (_params.global_plan_overwrite_orientation)
     {
-        _robot_goal.theta() = estimateLocalGoalOrientation(_global_plan, transformed_plan.back(), goal_idx, tf_plan_to_global);
+        //_robot_goal.theta() = estimateLocalGoalOrientation(_global_plan, transformed_plan.back(), goal_idx, tf_plan_to_global);
+        _robot_goal.theta() = estimateLocalGoalOrientation(_global_plan, goal_point, goal_idx, tf_plan_to_global);
         // overwrite/update goal orientation of the transformed plan with the actual goal (enable using the plan as initialization)
-        tf2::Quaternion q;
-        q.setRPY(0, 0, _robot_goal.theta());
-        tf2::convert(q, transformed_plan.back().pose.orientation);
+        //tf2::Quaternion q;
+        //q.setRPY(0, 0, _robot_goal.theta());
+        //tf2::convert(q, transformed_plan.back().pose.orientation);
     }
     else
     {
-        _robot_goal.theta() = tf2::getYaw(transformed_plan.back().pose.orientation);
+        //_robot_goal.theta() = tf2::getYaw(transformed_plan.back().pose.orientation);
+        _robot_goal.theta() = tf::getYaw(goal_point.getRotation());
     }
 
     // overwrite/update start of the transformed plan with the actual robot position (allows using the plan as initial trajectory)
@@ -369,7 +369,8 @@ uint32_t MpcLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     // updateControlFromTwist()
 
     // Do not allow config changes during the following optimization step
-    boost::mutex::scoped_lock cfg_lock(configMutex());
+    // TODO(roesmann): we need something similar in case we allow dynamic reconfiguration:
+    // boost::mutex::scoped_lock cfg_lock(cfg_.configMutex());
 
     // Now perform the actual planning
     // bool success = planner_->plan(transformed_plan, &robot_vel_, cfg_.goal_tolerance.free_goal_vel);
@@ -551,10 +552,15 @@ void MpcLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
         Eigen::Affine3d obstacle_to_map_eig;
         try
         {
-            geometry_msgs::TransformStamped obstacle_to_map =
-                _tf->lookupTransform(_global_frame, ros::Time(0), _custom_obstacle_msg.header.frame_id, ros::Time(0),
-                                     _custom_obstacle_msg.header.frame_id, ros::Duration(0.5));
-            obstacle_to_map_eig = tf2::transformToEigen(obstacle_to_map);
+            tf::StampedTransform obstacle_to_map;
+            _tf->waitForTransform(_global_frame, ros::Time(0),
+            _custom_obstacle_msg.header.frame_id, ros::Time(0),
+            _custom_obstacle_msg.header.frame_id, ros::Duration(0.5));
+            _tf->lookupTransform(_global_frame, ros::Time(0), 
+                _custom_obstacle_msg.header.frame_id, ros::Time(0),
+                _custom_obstacle_msg.header.frame_id, obstacle_to_map);
+            //obstacle_to_map_eig = tf2::transformToEigen(obstacle_to_map);
+            tf::transformTFToEigen(obstacle_to_map, obstacle_to_map_eig);
         }
         catch (tf::TransformException ex)
         {
@@ -642,18 +648,23 @@ Eigen::Vector2d MpcLocalPlannerROS::tfPoseToEigenVector2dTransRot(const tf::Pose
     return vel;
 }
 
-bool MpcLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geometry_msgs::PoseStamped& global_pose,
+//bool MpcLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geometry_msgs::PoseStamped& global_pose,
+bool MpcLocalPlannerROS::pruneGlobalPlan(const tf::TransformListener& tf, const tf::Stamped<tf::Pose>& global_pose,
                                          std::vector<geometry_msgs::PoseStamped>& global_plan, double dist_behind_robot)
 {
-    if (global_plan.empty()) return true;
+    if (global_plan.empty()) 
+        return true;
 
     try
     {
         // transform robot pose into the plan frame (we do not wait here, since pruning not crucial, if missed a few times)
-        geometry_msgs::TransformStamped global_to_plan_transform =
-            tf.lookupTransform(global_plan.front().header.frame_id, global_pose.header.frame_id, ros::Time(0));
-        geometry_msgs::PoseStamped robot;
-        tf2::doTransform(global_pose, robot, global_to_plan_transform);
+        //geometry_msgs::TransformStamped global_to_plan_transform;
+        tf::StampedTransform global_to_plan_transform;
+        tf.lookupTransform(global_plan.front().header.frame_id, global_pose.frame_id_, ros::Time(0),global_to_plan_transform);
+        //geometry_msgs::PoseStamped robot;
+        //tf2::doTransform(global_pose, robot, global_to_plan_transform);
+        tf::Stamped<tf::Pose> robot;
+        robot.setData( global_to_plan_transform * global_pose );
 
         double dist_thresh_sq = dist_behind_robot * dist_behind_robot;
 
@@ -662,8 +673,11 @@ bool MpcLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
         std::vector<geometry_msgs::PoseStamped>::iterator erase_end = it;
         while (it != global_plan.end())
         {
-            double dx      = robot.pose.position.x - it->pose.position.x;
-            double dy      = robot.pose.position.y - it->pose.position.y;
+            //double dx      = robot.pose.position.x - it->pose.position.x;
+            //double dy      = robot.pose.position.y - it->pose.position.y;
+            //double dist_sq = dx * dx + dy * dy;
+            double dx      = robot.getOrigin().x() - it->pose.position.x;
+            double dy      = robot.getOrigin().y() - it->pose.position.y;
             double dist_sq = dx * dx + dy * dy;
             if (dist_sq < dist_thresh_sq)
             {
@@ -672,9 +686,11 @@ bool MpcLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
             }
             ++it;
         }
-        if (erase_end == global_plan.end()) return false;
+        if (erase_end == global_plan.end()) 
+            return false;
 
-        if (erase_end != global_plan.begin()) global_plan.erase(global_plan.begin(), erase_end);
+        if (erase_end != global_plan.begin()) 
+            global_plan.erase(global_plan.begin(), erase_end);
     }
     catch (const tf::TransformException& ex)
     {
@@ -684,11 +700,12 @@ bool MpcLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
     return true;
 }
 
-bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
-                                             const geometry_msgs::PoseStamped& global_pose, const costmap_2d::Costmap2D& costmap,
+//bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
+bool MpcLocalPlannerROS::transformGlobalPlan(const tf::TransformListener& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
+                                             const tf::Stamped<tf::Pose>& global_pose, const costmap_2d::Costmap2D& costmap,
                                              const std::string& global_frame, double max_plan_length,
                                              std::vector<geometry_msgs::PoseStamped>& transformed_plan, int* current_goal_idx,
-                                             geometry_msgs::TransformStamped* tf_plan_to_global) const
+                                             tf::StampedTransform* tf_plan_to_global) const
 {
     // this method is a slightly modified version of base_local_planner/goal_functions.h
 
@@ -706,12 +723,20 @@ bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
         }
 
         // get plan_to_global_transform from plan frame to global_frame
-        geometry_msgs::TransformStamped plan_to_global_transform = tf.lookupTransform(
-            global_frame, ros::Time(), plan_pose.header.frame_id, plan_pose.header.stamp, plan_pose.header.frame_id, ros::Duration(0.5));
+        //geometry_msgs::TransformStamped plan_to_global_transform ;
+        tf::StampedTransform plan_to_global_transform;
+        tf.waitForTransform(global_frame, ros::Time::now(),plan_pose.header.frame_id, plan_pose.header.stamp,
+                            plan_pose.header.frame_id, ros::Duration(0.5));
+        tf.lookupTransform(global_frame, ros::Time(), 
+            plan_pose.header.frame_id, plan_pose.header.stamp, 
+            plan_pose.header.frame_id, plan_to_global_transform);
 
         // let's get the pose of the robot in the frame of the plan
-        geometry_msgs::PoseStamped robot_pose;
-        tf.transform(global_pose, robot_pose, plan_pose.header.frame_id);
+        //geometry_msgs::PoseStamped robot_pose;
+        tf::Stamped<tf::Pose> robot_pose;
+        //tf.transform(global_pose, robot_pose, plan_pose.header.frame_id);
+        tf.transformPose(plan_pose.header.frame_id, global_pose, robot_pose);
+
 
         // we'll discard points on the plan that are outside the local costmap
         double dist_threshold =
@@ -726,10 +751,13 @@ bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
         // we need to loop to a point on the plan that is within a certain distance of the robot
         for (int j = 0; j < (int)global_plan.size(); ++j)
         {
-            double x_diff      = robot_pose.pose.position.x - global_plan[j].pose.position.x;
-            double y_diff      = robot_pose.pose.position.y - global_plan[j].pose.position.y;
+            //double x_diff      = robot_pose.pose.position.x - global_plan[j].pose.position.x;
+            //double y_diff      = robot_pose.pose.position.y - global_plan[j].pose.position.y;
+            double x_diff = robot_pose.getOrigin().x() - global_plan[j].pose.position.x;
+            double y_diff = robot_pose.getOrigin().y() - global_plan[j].pose.position.y;
             double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
-            if (new_sq_dist > sq_dist_threshold) break;  // force stop if we have reached the costmap border
+            if (new_sq_dist > sq_dist_threshold) 
+                break;  // force stop if we have reached the costmap border
 
             if (new_sq_dist < sq_dist)  // find closest distance
             {
@@ -738,6 +766,7 @@ bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
             }
         }
 
+        tf::Stamped<tf::Pose> tf_pose;
         geometry_msgs::PoseStamped newer_pose;
 
         double plan_length = 0;  // check cumulative Euclidean distance along the plan
@@ -746,12 +775,19 @@ bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
         while (i < (int)global_plan.size() && sq_dist <= sq_dist_threshold && (max_plan_length <= 0 || plan_length <= max_plan_length))
         {
             const geometry_msgs::PoseStamped& pose = global_plan[i];
-            tf2::doTransform(pose, newer_pose, plan_to_global_transform);
+            //tf2::doTransform(pose, newer_pose, plan_to_global_transform);
+            tf::poseStampedMsgToTF(pose, tf_pose);
+            tf_pose.setData(plan_to_global_transform * tf_pose);
+            tf_pose.stamp_ = plan_to_global_transform.stamp_;
+            tf_pose.frame_id_ = global_frame;
+            tf::poseStampedTFToMsg(tf_pose, newer_pose);
 
             transformed_plan.push_back(newer_pose);
 
-            double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;
-            double y_diff = robot_pose.pose.position.y - global_plan[i].pose.position.y;
+            //double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;
+            //double y_diff = robot_pose.pose.position.y - global_plan[i].pose.position.y;
+            double x_diff = robot_pose.getOrigin().x() - global_plan[i].pose.position.x;
+            double y_diff = robot_pose.getOrigin().y() - global_plan[i].pose.position.y;
             sq_dist       = x_diff * x_diff + y_diff * y_diff;
 
             // caclulate distance to previous pose
@@ -765,7 +801,12 @@ bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
         // the resulting transformed plan can be empty. In that case we explicitly inject the global goal.
         if (transformed_plan.empty())
         {
-            tf2::doTransform(global_plan.back(), newer_pose, plan_to_global_transform);
+            //tf2::doTransform(global_plan.back(), newer_pose, plan_to_global_transform);
+            tf::poseStampedMsgToTF(global_plan.back(), tf_pose);
+            tf_pose.setData(plan_to_global_transform * tf_pose);
+            tf_pose.stamp_ = plan_to_global_transform.stamp_;
+            tf_pose.frame_id_ = global_frame;
+            tf::poseStampedTFToMsg(tf_pose, newer_pose);
 
             transformed_plan.push_back(newer_pose);
 
@@ -805,8 +846,8 @@ bool MpcLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
 }
 
 double MpcLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geometry_msgs::PoseStamped>& global_plan,
-                                                        const geometry_msgs::PoseStamped& local_goal, int current_goal_idx,
-                                                        const geometry_msgs::TransformStamped& tf_plan_to_global, int moving_average_length) const
+                                                        const tf::Stamped<tf::Pose>& local_goal, int current_goal_idx,
+                                                        const tf::StampedTransform& tf_plan_to_global, int moving_average_length) const
 {
     int n = (int)global_plan.size();
 
@@ -815,16 +856,20 @@ double MpcLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geomet
     {
         if (current_goal_idx >= n - 1)  // we've exactly reached the goal
         {
-            return tf2::getYaw(local_goal.pose.orientation);
+            //return tf2::getYaw(local_goal.pose.orientation);
+            return tf::getYaw(local_goal.getRotation());
         }
         else
         {
-            tf2::Quaternion global_orientation;
-            tf2::convert(global_plan.back().pose.orientation, global_orientation);
-            tf2::Quaternion rotation;
-            tf2::convert(tf_plan_to_global.transform.rotation, rotation);
+            //tf2::Quaternion global_orientation;
+            //tf2::convert(global_plan.back().pose.orientation, global_orientation);
+            //tf2::Quaternion rotation;
+            //tf2::convert(tf_plan_to_global.transform.rotation, rotation);
             // TODO(roesmann): avoid conversion to tf2::Quaternion
-            return tf2::getYaw(rotation * global_orientation);
+            //return tf2::getYaw(rotation * global_orientation);
+            tf::Quaternion global_orientation;
+            tf::quaternionMsgToTF(global_plan.back().pose.orientation, global_orientation);
+            return  tf::getYaw(tf_plan_to_global.getRotation() *  global_orientation );
         }
     }
 
@@ -833,20 +878,28 @@ double MpcLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geomet
         std::min(moving_average_length, n - current_goal_idx - 1);  // maybe redundant, since we have checked the vicinity of the goal before
 
     std::vector<double> candidates;
-    geometry_msgs::PoseStamped tf_pose_k = local_goal;
-    geometry_msgs::PoseStamped tf_pose_kp1;
+    //geometry_msgs::PoseStamped tf_pose_k = local_goal;
+    //geometry_msgs::PoseStamped tf_pose_kp1;
+    tf::Stamped<tf::Pose> tf_pose_k = local_goal;
+    tf::Stamped<tf::Pose> tf_pose_kp1;
 
     int range_end = current_goal_idx + moving_average_length;
     for (int i = current_goal_idx; i < range_end; ++i)
     {
         // Transform pose of the global plan to the planning frame
-        tf2::doTransform(global_plan.at(i + 1), tf_pose_kp1, tf_plan_to_global);
+        //tf2::doTransform(global_plan.at(i + 1), tf_pose_kp1, tf_plan_to_global);
+        const geometry_msgs::PoseStamped& pose = global_plan.at(i+1);
+        tf::poseStampedMsgToTF(pose, tf_pose_kp1);
+        tf_pose_kp1.setData(tf_plan_to_global * tf_pose_kp1);
 
         // calculate yaw angle
-        candidates.push_back(
-            std::atan2(tf_pose_kp1.pose.position.y - tf_pose_k.pose.position.y, tf_pose_kp1.pose.position.x - tf_pose_k.pose.position.x));
+        //candidates.push_back(
+        //    std::atan2(tf_pose_kp1.pose.position.y - tf_pose_k.pose.position.y, tf_pose_kp1.pose.position.x - tf_pose_k.pose.position.x));
+        candidates.push_back( std::atan2(tf_pose_kp1.getOrigin().getY() - tf_pose_k.getOrigin().getY(),
+			  tf_pose_kp1.getOrigin().getX() - tf_pose_k.getOrigin().getX() ) );
 
-        if (i < range_end - 1) tf_pose_k = tf_pose_kp1;
+        if (i < range_end - 1) 
+            tf_pose_k = tf_pose_kp1;
     }
     return teb_local_planner::average_angles(candidates);
 }

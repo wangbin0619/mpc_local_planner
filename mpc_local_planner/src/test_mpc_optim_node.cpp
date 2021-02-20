@@ -28,11 +28,21 @@
 #include <mpc_local_planner/mpc_local_planner_ros.h>
 #include <mpc_local_planner/utils/publisher.h>
 #include <teb_local_planner/obstacles.h>
+#include <teb_local_planner/teb_local_planner_ros.h>
 
 #include <interactive_markers/interactive_marker_server.h>
 #include <visualization_msgs/Marker.h>
 
+
 #include <memory>
+
+#include <boost/shared_ptr.hpp>
+#include <boost/make_shared.hpp>
+#include <boost/bind.hpp>
+#include <boost/bind/bind.hpp>
+#include <boost/bind/placeholders.hpp>
+#include <boost/is_placeholder.hpp>
+
 
 namespace mpc = mpc_local_planner;
 
@@ -181,7 +191,7 @@ void TestMpcOptimNode::CreateInteractiveMarker(const double& init_x, const doubl
 
     // add the interactive marker to our collection
     marker_server->insert(i_marker);
-    marker_server->setCallback(i_marker.name, boost::bind(&TestMpcOptimNode::CB_obstacle_marker, this, boost::placeholders::_1));
+    marker_server->setCallback(i_marker.name, boost::bind(&TestMpcOptimNode::CB_obstacle_marker, this, _1)); //boost::placeholders::_1
 }
 
 void TestMpcOptimNode::CB_obstacle_marker(const visualization_msgs::InteractiveMarkerFeedbackConstPtr& feedback)
